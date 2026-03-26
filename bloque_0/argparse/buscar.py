@@ -79,7 +79,7 @@ def main():
         total = 0
         for nombre_archivo in args.archivos:
             try:
-                with open(nombre_archivo, "r") as f:
+                with open(nombre_archivo, "r", encoding="utf-8") as f:
                     lineas = f.readlines()
                 total += procesar_archivo(nombre_archivo, lineas, args, mostrar_nombre)
             except FileNotFoundError:

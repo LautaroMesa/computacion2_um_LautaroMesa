@@ -1,0 +1,7 @@
+Todo bien por acá
+Error de conexión
+Sistema funcionando
+Error de timeout
+Nada raro aquí
+ERROR crítico del sistema
+debug: revisando logs

@@ -1,0 +1,3 @@
+dump_*.json
+__pycache__/
+*.pyc

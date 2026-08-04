@@ -287,5 +287,6 @@ docker compose exec monitor python -c "while True: pass"
 
 ## 7. Lo que aprendí
 
-*(Esta sección la completo yo con mis propias palabras antes de entregar — son 2-3
-párrafos personales sobre qué descubrí haciendo el TP, no una descripción técnica más.)*
+Lo más difícil de todo el TP, sin duda, fue algo que ni tenía que ver con escribir código: por qué la pantalla titilaba cuando corría el comando que pide la consigna, docker compose up --build, pero con docker compose run andaba perfecto. Al principio pensé que el error estaba en mi propio código de la TUI. Después de un rato dando vueltas encontramos que multiprocessing le cierra el stdin a los procesos hijos y lo reemplaza por /dev/null, así que el Display nunca podía leer el teclado aunque la terminal estuviera bien. Arreglé eso abriendo /dev/tty a mano, pensé "listo", y la pantalla seguía titilando igual. Probé sacarle el prefijo a los logs pensando que era solo un tema visual y tampoco cambió nada. Al final entendí que el problema no era mío en absoluto: docker compose up está armado para mostrar logs línea por línea, y una TUI de pantalla completa no manda líneas, manda un montón de códigos para mover el cursor y repintar todo el tiempo — son cosas que no combinan. Con docker compose run, que conecta la terminal directo, el mismo código anda perfecto.
+
+Me quedó la sensación de que a veces uno da por sentado que si algo falla es porque programó mal, y no siempre es así. Acá el error estaba en cómo la herramienta interpretaba la salida, no en mi lógica. Tuve que ir descartando cosas una por una hasta llegar ahí, y esa parte de investigar como si fuera un detective terminó siendo lo que más aprendí de toda la entrega.

@@ -1,16 +1,16 @@
 # Clase 16 — socketserver
 
-Ejercicio obligatorio 3: los mixins.
+Ejercicio obligatorio 2: los mixins (numeración del repo actualizado de la cátedra).
 
 ## Archivos
 
 | Archivo | Para qué |
 |---|---|
-| `mixins_fuente.py` | Partes A y B: métodos de cada mixin, quién resuelve `process_request` y los dos MRO |
-| `orden_mixins.py` | Parte B: el mismo servidor lento (2 s por cliente) con el mixin bien puesto (`correcto`) y al revés (`alreves`) |
+| `mixins_fuente.py` | Partes A y B: métodos de cada mixin, quién provee `process_request` y los dos MRO |
+| `orden_mixins.py` | Parte B: el mismo servidor lento (2 s por cliente) en tres versiones: `secuencial` (sin mixin), `correcto` y `alreves` |
 | `clientes_lentos.py` | Conecta N clientes a la vez y mide cuánto tardan en total |
-| `eco_tcp.py` | El de la cátedra (Parte C), con un flag `--sin-daemon` agregado para la Parte E |
-| `comandos_contador.py` | Parte D: servidor de comandos (basado en `comandos.py`) con un contador **global**, con threads o con `--fork` |
+| `comandos_contador.py` | Parte C: contador de conexiones con threads, con `--fork` y con `--fork --value` (`multiprocessing.Value`) |
+| `eco_tcp.py` | El de la cátedra, con un flag `--sin-daemon` agregado para la Parte D |
 
 ## Cómo correr
 
@@ -19,14 +19,14 @@ docker build -t clase16 .
 docker run --rm -it --name ss clase16 bash
 python mixins_fuente.py
 python orden_mixins.py alreves & python clientes_lentos.py 8080 2
-python comandos_contador.py --fork &  nc localhost 8080     # escribir CONTADOR
+python comandos_contador.py --fork --value &  nc localhost 8080     # escribir CONTADOR
 ```
 
 Todo lo de abajo corrió en Linux (Ubuntu 24.04, Python 3.12).
 
 ---
 
-## Parte A: leer el código fuente
+## Parte A: leer el código
 
 ```
 ThreadingMixIn: ['process_request_thread', 'process_request', 'server_close']
@@ -40,19 +40,18 @@ ForkingMixIn: ['collect_children', 'handle_timeout', 'service_actions', 'process
 ```
 
 **1.** `ThreadingMixIn` define **3** métodos (además de los atributos
-`daemon_threads`, `block_on_close` y `_threads`). El que importa es
-**`process_request`**: es el único punto donde cambia el comportamiento. Los otros
-dos le dan soporte: `process_request_thread` es lo que corre dentro del thread,
-y `server_close` hace el `join` de los threads al cerrar.
+`daemon_threads`, `block_on_close` y `_threads`). El que produce la
+concurrencia es **`process_request`**. Los otros dos le dan soporte:
+`process_request_thread` es lo que corre dentro del thread, y `server_close`
+hace el `join` de los threads al cerrar.
 
-**2.** `TCPServer` no define `process_request`: lo hereda de `BaseServer`, que
-hace `finish_request()` (crea el handler y corre `handle()`) y
-`shutdown_request()` **en el mismo hilo que hace el `accept`**. Mientras un
-cliente está siendo atendido, el servidor no acepta otro. La versión de
-`ThreadingMixIn` crea un `threading.Thread(target=process_request_thread)`, lo
-arranca y **vuelve enseguida**, así que el bucle de `serve_forever` vuelve a
-aceptar. El thread hace lo mismo que hacía `BaseServer` (`finish_request` +
-`shutdown_request`) y además captura las excepciones con `handle_error`.
+**2.** El `process_request` de `BaseServer` hace `finish_request()` (crea el handler
+y corre `handle()`) y `shutdown_request()` **en el mismo hilo que hace el
+`accept`**: mientras atiende a un cliente, el servidor no acepta otro. El del
+mixin crea un `threading.Thread(target=process_request_thread)`, lo arranca y
+**vuelve enseguida**, así que `serve_forever` vuelve a aceptar. El thread hace lo
+mismo que hacía `BaseServer` (`finish_request` + `shutdown_request`) y además
+captura las excepciones con `handle_error`.
 
 **3. ¿Dónde cosecha `ForkingMixIn`?** En **`collect_children()`**. Guarda los
 PIDs de sus hijos en `active_children` y, para cada uno, hace
@@ -64,12 +63,21 @@ PIDs de sus hijos en `active_children` y, para cada uno, hace
   del límite. Eso además sirve de control de carga.
 
 **¿Por qué no hay zombies como en la clase 14?** Porque **no usa `SIGCHLD`**:
-hace polling. No depende de que lleguen señales (que se fusionan y se pierden),
-sino que en cada vuelta recorre la lista de hijos y pregunta por cada uno. Un
-hijo que termina puede quedar zombie como mucho hasta la siguiente vuelta del
-bucle (~0,5 s), nunca de forma permanente.
+hace polling. No depende de señales que se fusionan y se pierden, sino que en
+cada vuelta recorre la lista de hijos y pregunta por cada uno. Un hijo que
+termina puede quedar zombie como mucho hasta la siguiente vuelta del bucle
+(~0,5 s), nunca de forma permanente.
 
-## Parte B: el orden importa
+**4. ¿Cuánto código propio tiene `ThreadingTCPServer`?** Ninguno:
+
+```python
+class ThreadingTCPServer(ThreadingMixIn, TCPServer): pass
+```
+
+Una línea y un `pass` (lo mismo `ForkingTCPServer`). Todo el comportamiento
+sale de combinar las dos bases en el orden correcto.
+
+## Parte B: el orden
 
 ```
 Correcto  ['Correcto', 'ThreadingMixIn', 'TCPServer', 'BaseServer', 'object']
@@ -80,115 +88,90 @@ AlReves   ['AlReves', 'TCPServer', 'BaseServer', 'ThreadingMixIn', 'object']
           server_close    -> TCPServer
 ```
 
-**4.** En `Correcto`, `ThreadingMixIn` aparece **antes** que `TCPServer` y
-`BaseServer`, así que su `process_request` es el primero que encuentra Python. En
-`AlReves` aparece **después** de `BaseServer`, que ya define `process_request`,
-así que la versión del mixin nunca se usa. El mixin está en la jerarquía pero no
+(En la consigna nueva se llaman `Bien` y `Mal`; en mi código, `Correcto` y `AlReves`).
+
+**5.** En `Correcto`, `ThreadingMixIn` aparece **antes** que `TCPServer` y
+`BaseServer`. En `AlReves` aparece **después** de `BaseServer`, que ya define
+`process_request`.
+
+**6.** En `Correcto` lo provee **`ThreadingMixIn`**; en `AlReves`,
+**`BaseServer`**. La versión del mixin nunca se usa: está en la jerarquía pero no
 tiene ningún efecto.
 
-**5.** Dos clientes lentos (2 s cada uno) con `clientes_lentos.py`:
+**7.** Dos clientes lentos (2 s cada uno) con `clientes_lentos.py`:
+
+| Servidor | Hilo que atiende | Cliente 0 | Cliente 1 | Total |
+|---|---|---|---|---|
+| `secuencial` (`TCPServer` solo) | `MainThread` las dos veces | 2,01 s | 4,01 s | **4,01 s** |
+| `correcto` | `Thread-1`, `Thread-2` | 2,01 s | 2,01 s | **2,01 s** |
+| `alreves` | `MainThread` las dos veces | 2,01 s | 4,01 s | **4,01 s** |
+
+`Correcto` atiende en paralelo. `AlReves` se comporta **exactamente igual que
+el secuencial**, con el mismo tiempo y el mismo hilo, aunque "tenga"
+`ThreadingMixIn`.
+
+**8.** No lanza **ningún error**, ni al definir la clase ni al correr. Por eso es
+peligroso: el código parece concurrente, las pruebas con un cliente funcionan, y
+el problema recién aparece con carga, como un servidor lento sin ninguna pista
+de por qué. **Los mixins van primero** (a la izquierda), o conviene usar las clases
+ya armadas (`ThreadingTCPServer`, `ForkingTCPServer`).
+
+## Parte C: forking y memoria
+
+4 conexiones seguidas; cada una manda `PID` y `CONTADOR`:
 
 ```
-[correcto] ['Correcto', 'ThreadingMixIn', 'TCPServer'] en :9301
-  atendiendo 46494 en Thread-1 (process_request_thread)
-  atendiendo 46498 en Thread-2 (process_request_thread)
-  cliente 0: b'CLIENTE 0' en 2.00s
-  cliente 1: b'CLIENTE 1' en 2.00s
-Total para 2 clientes: 2.01s
-
-[alreves] ['AlReves', 'TCPServer', 'BaseServer'] en :9301
-  atendiendo 58612 en MainThread
-  atendiendo 58620 en MainThread
-  cliente 0: b'CLIENTE 0' en 2.00s
-  cliente 1: b'CLIENTE 1' en 4.01s
-Total para 2 clientes: 4.01s
+threads                         --fork                          --fork --value
+pid=5360 hilo=Thread-1 ...      pid=5379 hilo=MainThread        pid=5394 hilo=MainThread
+Conexiones totales: 1           Conexiones totales: 1           Conexiones totales: 1
+pid=5360 hilo=Thread-2 ...      pid=5382 hilo=MainThread        pid=5397 hilo=MainThread
+Conexiones totales: 2           Conexiones totales: 1           Conexiones totales: 2
+pid=5360 hilo=Thread-3 ...      pid=5385 hilo=MainThread        pid=5400 hilo=MainThread
+Conexiones totales: 3           Conexiones totales: 1           Conexiones totales: 3
+pid=5360 hilo=Thread-4 ...      pid=5388 hilo=MainThread        pid=5403 hilo=MainThread
+Conexiones totales: 4           Conexiones totales: 1           Conexiones totales: 4
 ```
 
-`Correcto` atiende en paralelo, cada cliente en su thread: 2 s en total.
-`AlReves` atiende todo en `MainThread`, **uno detrás del otro**: el segundo
-cliente tarda 4 s.
+**9.** Con `ForkingTCPServer`, `CONTADOR` devuelve **siempre 1**.
 
-**6.** No lanza **ningún error**, ni al definir la clase ni al correr. Por eso es
-peligroso: el código "tiene" `ThreadingMixIn`, las pruebas con un cliente
-funcionan, y el problema aparece recién en producción con carga, como un servidor
-lento sin ninguna pista de por qué. Hay que acordarse de que **los mixins van
-primero** (a la izquierda) o, más seguro, usar las clases ya armadas
-(`ThreadingTCPServer`, `ForkingTCPServer`).
+**10. Por qué (clase 4).** `fork()` crea un proceso hijo con una **copia** del
+espacio de memoria del padre (copy-on-write). El contador vive en el objeto
+servidor, en la memoria del padre, y el padre nunca lo incrementa: `setup()` corre
+en el hijo. Cada hijo arranca con su copia en `0`, la incrementa a `1`, responde
+y muere, y ese cambio muere con él. El padre y los demás hijos nunca lo ven. El
+`threading.Lock` tampoco sirve: también es una copia por proceso. Con threads
+funciona porque todos comparten la memoria del mismo proceso.
 
-## Parte C: threads contra procesos
+**11. El arreglo: `multiprocessing.Value`** (clase 9). Está en
+`comandos_contador.py --fork --value` (clase `ContadorCompartido`):
 
-5 clientes conectados a la vez a `eco_tcp.py`:
+```python
+def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.contador = multiprocessing.Value('i', 0)
 
-```
-threads (python3 eco_tcp.py):
-+ 127.0.0.1:43222  (pid=4800 hilo=Thread-1 (process_request_thread))
-+ 127.0.0.1:43196  (pid=4800 hilo=Thread-2 (process_request_thread))
-...
-+ 127.0.0.1:43194  (pid=4800 hilo=Thread-5 (process_request_thread))
-threads del proceso (ls /proc/PID/task | wc -l): 6
-hijos: 0
-
-fork (python3 eco_tcp.py --fork):
-+ 127.0.0.1:42798  (pid=4978 hilo=MainThread)
-+ 127.0.0.1:42808  (pid=4979 hilo=MainThread)
-...
-+ 127.0.0.1:42836  (pid=4982 hilo=MainThread)
-threads del proceso: 1
-hijos (ps --ppid):
- 4978 S    python3
- 4979 S    python3
- 4980 S    python3
- 4981 S    python3
- 4982 S    python3
+def incrementar(self):
+    with self.contador.get_lock():     # += son dos accesos: hace falta el lock
+        self.contador.value += 1
 ```
 
-**7.** Con threads, el **PID es siempre el mismo** y cambia el hilo
-(`Thread-1` … `Thread-5`). Con fork, **cada cliente tiene su PID** y todos corren
-en `MainThread` (cada proceso hijo tiene un único hilo).
-
-**8.** Con `--fork`, **5 PIDs distintos** (4978-4982), los 5 hijos que muestra
-`ps --ppid`, todos en estado `S` (dormidos en `recv`, esperando datos).
-
-**9.** Con threads, **6** entradas en `/proc/PID/task`: el hilo principal (el
-de `serve_forever`) más un thread por cliente.
-
-## Parte D: el estado no se comparte igual
-
-4 conexiones seguidas, cada una manda `PID` y `CONTADOR`:
+Con 4 conexiones cuenta 1, 2, 3, 4. Además lo probé con **200 conexiones
+concurrentes** (50 a la vez) y una más para consultar:
 
 ```
-ThreadingTCPServer                      ForkingTCPServer
-pid=4990 hilo=Thread-1 ...              pid=5009 hilo=MainThread
-Conexiones totales: 1                   Conexiones totales: 1
-pid=4990 hilo=Thread-2 ...              pid=5012 hilo=MainThread
-Conexiones totales: 2                   Conexiones totales: 1
-pid=4990 hilo=Thread-3 ...              pid=5016 hilo=MainThread
-Conexiones totales: 3                   Conexiones totales: 1
-pid=4990 hilo=Thread-4 ...              pid=5019 hilo=MainThread
-Conexiones totales: 4                   Conexiones totales: 1
+Conexiones totales: 201 (esperado 201)
 ```
 
-**10.** Con threads funciona porque **todos los threads están en el mismo
-proceso** y comparten la memoria: la variable global `contador` es una sola, y
-cada handler incrementa la misma. Hace falta el `Lock`, porque `+=` no es atómico
-(clase 11).
+**12. ¿Dónde se crea el `Value`?** En el **`__init__` del servidor**, que corre en
+el padre **antes** del primer `fork()`. `Value` reserva memoria compartida
+(un `mmap` anónimo compartido), y los hijos creados después heredan ese mismo
+mapeo: todos escriben en las mismas páginas físicas. Si se creara en el handler,
+cada hijo reservaría su **propio** `Value` nuevo después del fork, que nadie más
+ve, y el contador volvería a dar siempre 1.
 
-**11.** Con fork siempre devuelve **1**. Cada conexión es un proceso hijo creado
-con `fork()`, que recibe una **copia** de la memoria del padre, con `contador =
-0` porque el padre nunca lo incrementa: el `setup()` corre en el hijo. El hijo
-incrementa **su** copia a 1, responde y muere, y el incremento muere con él. El
-padre y los demás hijos nunca lo ven. (El `Lock` tampoco sirve de nada: también
-es una copia por proceso).
+## Parte D: daemon_threads
 
-**12.** Hace falta **memoria compartida entre procesos** de la clase 9:
-`multiprocessing.Value('i', 0)` (con su `get_lock()`), creado **antes** de
-`serve_forever` para que los hijos lo hereden. Otra opción es un `Manager` si
-el estado es más complejo (un dict de clientes activos, por ejemplo), a costa de
-pasar cada acceso por un proceso servidor.
-
-## Parte E: daemon_threads
-
-Servidor de threads con un cliente conectado (`nc`, que se queda abierto 8 s) y
+Servidor de threads (`eco_tcp.py`) con un cliente conectado (`nc`, abierto 8 s) y
 SIGINT (lo mismo que Ctrl+C) apenas conecta:
 
 ```
@@ -209,16 +192,24 @@ cliente que deja la conexión abierta impide apagar el servidor.
 **14.** Con `daemon_threads = True`, los threads de los clientes son daemon: no
 se registran para el `join` y el intérprete no los espera al salir. El proceso
 termina de inmediato (0,11 s) y las conexiones abiertas se cortan de golpe.
-Es lo que se quiere al apagar con Ctrl+C. La contra es que un cliente a mitad
-de una respuesta la recibe cortada; para un apagado prolijo habría que avisarles
-a los handlers y esperarlos con un tiempo límite.
+Es lo que se quiere al apagar con Ctrl+C. La contra es que un cliente a mitad de
+una respuesta la recibe cortada; para un apagado prolijo habría que avisarles a
+los handlers y esperarlos con un tiempo límite.
+
+## Extra: threads contra procesos (de la versión anterior de la consigna)
+
+5 clientes conectados a la vez a `eco_tcp.py`. Con threads: **un solo PID** y
+6 entradas en `/proc/PID/task` (el hilo principal más uno por cliente). Con
+`--fork`: **5 PIDs distintos**, los 5 hijos de `ps --ppid`, todos en `MainThread`
+y en estado `S` (esperando datos en `recv`).
 
 ## Checklist de la consigna
 
 - [x] Qué método sobrescribe cada mixin (`process_request`)
 - [x] Dónde cosecha los hijos `ForkingMixIn` (`collect_children` desde `service_actions`, por polling)
-- [x] Los dos MRO y la diferencia
-- [x] Orden invertido: no da error pero no concurre (2 s contra 4 s)
-- [x] PIDs con forking (5) y threads con threading (6 tasks)
-- [x] Por qué el estado compartido funciona con threads y no con procesos
+- [x] Los dos MRO y qué clase provee `process_request` en cada uno
+- [x] Orden invertido: no da error pero no concurre
+- [x] Diferencia medida entre secuencial y concurrente (4,01 s contra 2,01 s)
+- [x] Por qué el estado compartido falla con forking
+- [x] Versión con `multiprocessing.Value` (201/201 con 200 conexiones concurrentes)
 - [x] Efecto de `daemon_threads` (0,11 s contra esperar al cliente)

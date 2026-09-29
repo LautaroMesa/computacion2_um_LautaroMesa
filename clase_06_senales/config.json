@@ -1,0 +1,4 @@
+{
+    "max_conexiones": 100,
+    "timeout": 30
+}

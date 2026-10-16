@@ -7,13 +7,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket
+from fastapi.responses import PlainTextResponse
 
 from .config import Config
 from .modelos import TERMINALES, Estadisticas, Estado, TareaNueva, TareaOut
 from .persistencia import reportar_volcado_previo, volcar
 from .pool import ColaLlena, NoAcepta, PoolTareas
-from .registro import Registro
+from .registro import CORTE, Registro
 from .tareas import Ejecutores
 
 log = logging.getLogger('tp2')
@@ -150,6 +151,71 @@ def crear_app(config: Config | None = None) -> FastAPI:
             # en reposo tiene que volver siempre al mismo número.
             'corrutinas_vivas': len(asyncio.all_tasks()),
         }
+
+    @app.websocket('/eventos')
+    async def eventos(ws: WebSocket):
+        """Bonus: cada cambio de estado de cualquier tarea, en tiempo real.
+
+        Dos corrutinas por conexión: `enviar` saca eventos de la cola del
+        suscriptor y los manda; el bucle principal espera en receive() para
+        enterarse de la desconexión (del cliente, o la que provoca uvicorn al
+        apagar). Sin ese receive(), el handler se quedaría bloqueado en
+        cola.get() para siempre después de que el cliente se fue.
+        """
+        await ws.accept()
+        registro = ws.app.state.registro
+        cola = registro.suscribir()
+
+        async def enviar():
+            while True:
+                evento = await cola.get()
+                if evento is CORTE:
+                    await ws.close(code=1008, reason='cliente demasiado lento')
+                    return
+                await ws.send_json(evento)
+
+        envio = asyncio.create_task(enviar())
+        try:
+            while True:
+                mensaje = await ws.receive()
+                if mensaje['type'] == 'websocket.disconnect':
+                    break
+        finally:
+            envio.cancel()
+            await asyncio.gather(envio, return_exceptions=True)
+            registro.desuscribir(cola)
+
+    @app.get('/metrics', response_class=PlainTextResponse)
+    async def metricas(request: Request):
+        """Bonus: las mismas estadísticas en formato de texto de Prometheus."""
+        registro, pool = _registro(request), _pool(request)
+        por_tipo, en_cola = registro.promedios()
+        lineas = [
+            '# HELP tp2_tareas Tareas en el registro, por estado.',
+            '# TYPE tp2_tareas gauge',
+            *(f'tp2_tareas{{estado="{e}"}} {n}' for e, n in registro.contar_por_estado().items()),
+            '# HELP tp2_tareas_rechazadas_total POST rechazados con 503 (cola llena o apagando).',
+            '# TYPE tp2_tareas_rechazadas_total counter',
+            f'tp2_tareas_rechazadas_total {pool.rechazadas}',
+            '# HELP tp2_workers Workers del pool.',
+            '# TYPE tp2_workers gauge',
+            f'tp2_workers {len(pool.workers)}',
+            '# HELP tp2_workers_ocupados Workers ejecutando una tarea.',
+            '# TYPE tp2_workers_ocupados gauge',
+            f'tp2_workers_ocupados {pool.ocupados}',
+            '# HELP tp2_cola_en_espera Tareas en la asyncio.Queue.',
+            '# TYPE tp2_cola_en_espera gauge',
+            f'tp2_cola_en_espera {pool.cola.qsize()}',
+            '# HELP tp2_ejecucion_promedio_segundos Duracion media de las completadas, por tipo.',
+            '# TYPE tp2_ejecucion_promedio_segundos gauge',
+            *(f'tp2_ejecucion_promedio_segundos{{tipo="{t}"}} {v}'
+              for t, v in por_tipo.items() if v is not None),
+            '# HELP tp2_espera_en_cola_promedio_segundos Espera media antes de ejecutar.',
+            '# TYPE tp2_espera_en_cola_promedio_segundos gauge',
+            f'tp2_espera_en_cola_promedio_segundos {en_cola or 0}',
+        ]
+        return PlainTextResponse('\n'.join(lineas) + '\n',
+                                 media_type='text/plain; version=0.0.4')
 
     return app
 

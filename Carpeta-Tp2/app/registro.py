@@ -163,8 +163,13 @@ class Registro:
 
     # --- suscripción a cambios (para el WebSocket /eventos) ---
 
-    def suscribir(self):
-        cola = asyncio.Queue(maxsize=1000)
+    def suscribir(self, capacidad=1000):
+        """Una cola por suscriptor: _notificar le deja cada cambio de estado.
+
+        Es el patrón productor-consumidor otra vez, pero al revés que el pool:
+        un productor (el registro) y muchos consumidores (los WebSockets).
+        """
+        cola = asyncio.Queue(maxsize=capacidad)
         self._oyentes.add(cola)
         return cola
 
@@ -175,10 +180,18 @@ class Registro:
         if not self._oyentes:
             return
         evento = {'id': tarea.id, 'tipo': tarea.tipo, 'estado': tarea.estado.value,
-                  'error': tarea.error}
+                  'error': tarea.error, 'momento': _ahora().isoformat()}
         for cola in list(self._oyentes):
             try:
                 cola.put_nowait(evento)
             except asyncio.QueueFull:
-                # Un cliente lento no puede frenar al resto: se le cortan los eventos
+                # Un cliente que no lee no puede frenar al resto ni hacer
+                # crecer la memoria: se vacía su cola, se le deja CORTE y se
+                # lo da de baja. El WebSocket, al ver CORTE, cierra la conexión.
+                while not cola.empty():
+                    cola.get_nowait()
+                cola.put_nowait(CORTE)
                 self._oyentes.discard(cola)
+
+
+CORTE = object()     # marca para un suscriptor que se quedó atrás

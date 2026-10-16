@@ -36,6 +36,7 @@ class PoolTareas:
         self.cola = asyncio.Queue(maxsize=config.max_cola)
         self.workers: list[asyncio.Task] = []
         self.ocupados = 0
+        self.rechazadas = 0
         self.aceptando = True
         self._apagando = False
 
@@ -102,10 +103,12 @@ class PoolTareas:
     def encolar(self, tarea):
         """Lo llama el POST. No espera nada: o entra a la cola ya, o falla ya."""
         if not self.aceptando:
+            self.rechazadas += 1
             raise NoAcepta()
         try:
             self.cola.put_nowait(tarea.id)
         except asyncio.QueueFull:
+            self.rechazadas += 1
             raise ColaLlena() from None
 
     # ---------------------------------------------------------------

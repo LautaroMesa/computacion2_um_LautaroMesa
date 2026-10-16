@@ -77,8 +77,10 @@ class Ejecutores:
         if self.cliente is not None:
             await self.cliente.aclose()
         if self.pool_cpu is not None:
-            # cancel_futures: lo que no empezó, no empieza
-            self.pool_cpu.shutdown(wait=True, cancel_futures=True)
+            # shutdown(wait=True) BLOQUEA hasta que los procesos terminen el
+            # bloque que estén calculando (hasta ~0,2 s): se hace en un thread
+            # para no frenar el event loop. cancel_futures: lo que no empezó, no empieza.
+            await asyncio.to_thread(self.pool_cpu.shutdown, wait=True, cancel_futures=True)
 
     def como_dict(self):
         return {'descargar': self.descargar, 'hashear': self.hashear, 'esperar': self.esperar}

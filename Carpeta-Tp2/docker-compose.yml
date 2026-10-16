@@ -18,6 +18,12 @@ services:
     # Más que TP2_GRACIA: docker espera esto después del SIGTERM antes de
     # mandar SIGKILL, así el apagado ordenado llega a volcar el estado.
     stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Servidor HTTP que responde con una demora fija (GET /demora/<segundos>).
   # Para medir `descargar` sin depender de internet: desde la API se llega

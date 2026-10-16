@@ -128,10 +128,6 @@ class Registro:
         self._notificar(tarea)
         return tarea
 
-    def descartar(self, tarea):
-        """Saca una tarea que nunca llegó a encolarse (cola llena)."""
-        self._tareas.pop(tarea.id, None)
-
     def _transicion(self, tarea, nuevo):
         if nuevo not in TRANSICIONES.get(tarea.estado, set()):
             raise TransicionInvalida(f'tarea {tarea.id}: {tarea.estado.value} -> {nuevo.value}')

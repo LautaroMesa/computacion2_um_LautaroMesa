@@ -1,5 +1,9 @@
 """Pool de workers: N corrutinas que consumen una asyncio.Queue.
 
+Los workers no terminan por un centinela sino por cancelación: al apagar se
+espera a las tareas en curso (con límite) y después se cancela a los workers,
+que en ese momento están bloqueados en cola.get().
+
 Es el productor-consumidor de la clase 11 con corrutinas en vez de threads.
 El productor es el endpoint POST /tareas (pone el id en la cola y vuelve en
 el acto); los consumidores son los workers.
@@ -15,9 +19,6 @@ import logging
 from .modelos import Estado
 
 log = logging.getLogger('tp2.pool')
-
-CENTINELA = object()     # "no hay más trabajo": un worker que lo saca, termina
-
 
 class ColaLlena(Exception):
     pass
@@ -100,16 +101,25 @@ class PoolTareas:
     # productor
     # ---------------------------------------------------------------
 
-    def encolar(self, tarea):
-        """Lo llama el POST. No espera nada: o entra a la cola ya, o falla ya."""
+    def verificar_lugar(self):
+        """Lo llama el POST ANTES de crear la tarea: si no hay lugar, falla ya.
+
+        Entre esta verificación y el put_nowait de encolar() el POST no hace
+        ningún await, así que ninguna otra corrutina puede ocupar el lugar en
+        el medio: "verificar y después actuar" es seguro sin Lock porque el
+        event loop solo cambia de corrutina en un await (clase 18).
+        """
         if not self.aceptando:
             self.rechazadas += 1
             raise NoAcepta()
-        try:
-            self.cola.put_nowait(tarea.id)
-        except asyncio.QueueFull:
+        if self.cola.full():
             self.rechazadas += 1
-            raise ColaLlena() from None
+            raise ColaLlena()
+
+    def encolar(self, tarea):
+        """Pone el id en la cola. No espera nada (put_nowait): el POST
+        responde en el acto. Después de verificar_lugar() no puede fallar."""
+        self.cola.put_nowait(tarea.id)
 
     # ---------------------------------------------------------------
     # consumidores
@@ -119,8 +129,6 @@ class PoolTareas:
         while True:
             tarea_id = await self.cola.get()
             try:
-                if tarea_id is CENTINELA:
-                    return
                 tarea = self.registro.obtener(tarea_id)
                 # Pudo haber sido cancelada mientras esperaba en la cola
                 if tarea is None or tarea.estado != Estado.PENDIENTE:

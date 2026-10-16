@@ -96,16 +96,18 @@ def crear_app(config: Config | None = None) -> FastAPI:
     async def crear_tarea(nueva: TareaNueva, request: Request, response: Response):
         """Encola la tarea y responde en el acto (202 Accepted): NO espera a que se ejecute."""
         registro, pool = _registro(request), _pool(request)
-        timeout = nueva.timeout or config.timeout_defecto
-        tarea = registro.crear(nueva.tipo, nueva.parametros.model_dump(mode='json'), timeout)
         try:
-            pool.encolar(tarea)
+            pool.verificar_lugar()
         except (ColaLlena, NoAcepta) as e:
-            registro.descartar(tarea)
             motivo = ('la cola esta llena' if isinstance(e, ColaLlena)
                       else 'el servidor se esta apagando')
             raise HTTPException(503, f'No se acepta la tarea: {motivo}',
                                 headers={'Retry-After': '5'}) from None
+        # Desde verificar_lugar() hasta acá no hay ningún await: el lugar en
+        # la cola sigue libre cuando llega el put_nowait de encolar().
+        timeout = nueva.timeout or config.timeout_defecto
+        tarea = registro.crear(nueva.tipo, nueva.parametros.model_dump(mode='json'), timeout)
+        pool.encolar(tarea)
         response.headers['Location'] = f'/tareas/{tarea.id}'
         return tarea.a_dict()
 

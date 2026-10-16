@@ -3,15 +3,27 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # Los ${VAR:-defecto} permiten cambiar la configuración sin editar este
+    # archivo, por ejemplo para las mediciones:
+    #   TP2_HASH_EXECUTOR=ninguno docker compose up --build
     environment:
-      TP2_WORKERS: "4"
-      TP2_PROCESOS: "2"
-      TP2_MAX_COLA: "1000"
-      TP2_TIMEOUT: "60"
-      TP2_GRACIA: "10"
-      TP2_HASH_EXECUTOR: "proceso"
+      TP2_WORKERS: "${TP2_WORKERS:-4}"
+      TP2_PROCESOS: "${TP2_PROCESOS:-2}"
+      TP2_MAX_COLA: "${TP2_MAX_COLA:-1000}"
+      TP2_TIMEOUT: "${TP2_TIMEOUT:-60}"
+      TP2_GRACIA: "${TP2_GRACIA:-10}"
+      TP2_HASH_EXECUTOR: "${TP2_HASH_EXECUTOR:-proceso}"
     volumes:
       - ./estado:/app/estado
     # Más que TP2_GRACIA: docker espera esto después del SIGTERM antes de
     # mandar SIGKILL, así el apagado ordenado llega a volcar el estado.
     stop_grace_period: 30s
+
+  # Servidor HTTP que responde con una demora fija (GET /demora/<segundos>).
+  # Para medir `descargar` sin depender de internet: desde la API se llega
+  # como http://lento:8081/demora/1
+  lento:
+    build: .
+    command: ["python", "scripts/servidor_lento.py", "8081"]
+    ports:
+      - "8081:8081"

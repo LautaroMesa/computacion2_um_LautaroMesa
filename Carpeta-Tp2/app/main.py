@@ -11,11 +11,16 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 from .config import Config
 from .modelos import TERMINALES, Estadisticas, Estado, TareaNueva, TareaOut
+from .persistencia import reportar_volcado_previo, volcar
 from .pool import ColaLlena, NoAcepta, PoolTareas
 from .registro import Registro
 from .tareas import Ejecutores
 
 log = logging.getLogger('tp2')
+
+# Al apagar, cuánto espera uvicorn a que se cierren las conexiones HTTP
+# abiertas (por ejemplo, un WebSocket) antes de cortarlas.
+TIMEOUT_HTTP_APAGADO = 5
 
 
 def crear_app(config: Config | None = None) -> FastAPI:
@@ -25,6 +30,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
     async def ciclo_de_vida(app: FastAPI):
         # Todo lo que vive mientras vive el servidor se crea ACÁ, dentro del
         # event loop que crea uvicorn, y se libera al salir del `yield`.
+        reportar_volcado_previo(config.dir_estado)
         registro = Registro()
         ejecutores = Ejecutores(config)
         await ejecutores.abrir()
@@ -35,10 +41,27 @@ def crear_app(config: Config | None = None) -> FastAPI:
         try:
             yield
         finally:
-            # Orden inverso al de creación: primero los workers (que usan el
-            # cliente HTTP y el pool de procesos), después los recursos.
-            await pool.apagar(config.gracia_apagado)
-            await ejecutores.cerrar()
+            # Apagado ordenado. Para cuando llegamos acá, uvicorn ya dejó de
+            # aceptar conexiones y terminó los pedidos HTTP en curso.
+            conteo = registro.contar_por_estado()
+            log.info('apagado: %d en curso, %d pendientes en la cola',
+                     conteo['ejecutando'], conteo['pendiente'])
+            try:
+                # Orden inverso al de creación: primero los workers (que usan
+                # el cliente HTTP y el pool de procesos), después los recursos.
+                await pool.apagar(config.gracia_apagado)
+                await ejecutores.cerrar()
+            finally:
+                # Volcar pase lo que pase: aunque el apagado haya fallado,
+                # el estado en memoria se perdería al salir.
+                try:
+                    ruta = volcar(registro, config.dir_estado, extra={
+                        'senal': getattr(app.state, 'senal', None),
+                        'workers': config.workers,
+                    })
+                    log.info('estado volcado a %s (%d tareas)', ruta, len(registro))
+                except OSError:
+                    log.exception('no se pudo volcar el estado')
 
     app = FastAPI(
         title='TP2 - Plataforma de tareas distribuidas',
@@ -131,11 +154,53 @@ def crear_app(config: Config | None = None) -> FastAPI:
 
 
 def main():
+    import signal
+
     import uvicorn
+
+    class Servidor(uvicorn.Server):
+        """uvicorn ya atiende SIGINT y SIGTERM (con signal.signal, así que
+        anda también en Windows): la primera señal deja de aceptar
+        conexiones, espera los pedidos HTTP en curso y corre el shutdown del
+        lifespan, que es donde está nuestro apagado ordenado.
+
+        Lo extendemos en dos cosas:
+          - dejar de aceptar TAREAS en el instante en que llega la señal;
+          - ignorar las señales siguientes. En uvicorn, una segunda Ctrl+C
+            fuerza la salida y, según en qué momento llegue, puede saltear el
+            lifespan (y con él, el volcado). No hace falta forzar nada: el
+            apagado está acotado (TIMEOUT_HTTP_APAGADO + TP2_GRACIA). Para
+            matar el proceso igual queda SIGKILL.
+
+        Corre como manejador de señal, así que solo levanta flags: el
+        trabajo de verdad lo hace el lifespan, dentro del event loop.
+        """
+
+        def handle_exit(self, sig, frame):
+            nombre = signal.Signals(sig).name
+            if self.should_exit:
+                log.warning('%s ignorada: el apagado ordenado ya esta en curso '
+                            '(termina en menos de %.0fs)', nombre,
+                            TIMEOUT_HTTP_APAGADO + config.gracia_apagado)
+                return
+            app.state.senal = nombre
+            pool = getattr(app.state, 'pool', None)
+            if pool is not None:
+                pool.aceptando = False
+            log.warning('%s recibida: apagado ordenado', nombre)
+            super().handle_exit(sig, frame)
+
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)-7s %(name)s: %(message)s')
     config = Config.desde_entorno()
-    uvicorn.run(crear_app(config), host=config.host, port=config.puerto)
+    app = crear_app(config)
+    try:
+        Servidor(uvicorn.Config(app, host=config.host, port=config.puerto,
+                                timeout_graceful_shutdown=TIMEOUT_HTTP_APAGADO)).run()
+    except KeyboardInterrupt:
+        # Al terminar, uvicorn vuelve a lanzar la señal que capturó; con
+        # SIGINT eso es un KeyboardInterrupt. El apagado ya se hizo.
+        pass
 
 
 # La guarda es obligatoria: con 'spawn' (Windows/macOS, y el que usamos para el

@@ -3,6 +3,7 @@
 Uso:
     python -m app.main               # escucha en TP2_HOST:TP2_PUERTO (127.0.0.1:8000)
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from .config import Config
 from .modelos import TERMINALES, Estadisticas, Estado, TareaNueva, TareaOut
 from .pool import ColaLlena, NoAcepta, PoolTareas
 from .registro import Registro
-from .tareas import armar_ejecutores
+from .tareas import Ejecutores
 
 log = logging.getLogger('tp2')
 
@@ -25,12 +26,19 @@ def crear_app(config: Config | None = None) -> FastAPI:
         # Todo lo que vive mientras vive el servidor se crea ACÁ, dentro del
         # event loop que crea uvicorn, y se libera al salir del `yield`.
         registro = Registro()
-        pool = PoolTareas(registro, config, armar_ejecutores())
+        ejecutores = Ejecutores(config)
+        await ejecutores.abrir()
+        pool = PoolTareas(registro, config, ejecutores.como_dict())
         pool.iniciar()
         app.state.registro = registro
         app.state.pool = pool
-        yield
-        await pool.apagar(config.gracia_apagado)
+        try:
+            yield
+        finally:
+            # Orden inverso al de creación: primero los workers (que usan el
+            # cliente HTTP y el pool de procesos), después los recursos.
+            await pool.apagar(config.gracia_apagado)
+            await ejecutores.cerrar()
 
     app = FastAPI(
         title='TP2 - Plataforma de tareas distribuidas',
@@ -114,6 +122,9 @@ def crear_app(config: Config | None = None) -> FastAPI:
             'cola_capacidad': config.max_cola,
             'aceptando': pool.aceptando,
             'hash_executor': config.hash_executor,
+            # Para verificar que la cancelación no deja corrutinas huérfanas:
+            # en reposo tiene que volver siempre al mismo número.
+            'corrutinas_vivas': len(asyncio.all_tasks()),
         }
 
     return app

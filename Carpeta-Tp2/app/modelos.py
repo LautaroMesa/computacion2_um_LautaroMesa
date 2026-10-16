@@ -104,3 +104,4 @@ class Estadisticas(BaseModel):
     cola_capacidad: int
     aceptando: bool
     hash_executor: str
+    corrutinas_vivas: int

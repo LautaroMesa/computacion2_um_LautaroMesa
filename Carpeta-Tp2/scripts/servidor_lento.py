@@ -16,7 +16,6 @@ import asyncio
 import sys
 from urllib.parse import parse_qs, urlsplit
 
-PUERTO = int(sys.argv[1]) if len(sys.argv) > 1 else 8081
 MAX_DEMORA = 60.0
 MAX_BYTES = 10 * 1024 * 1024
 
@@ -61,15 +60,15 @@ async def atender(reader, writer):
         writer.close()
 
 
-async def main():
-    servidor = await asyncio.start_server(atender, '0.0.0.0', PUERTO)
-    print(f'servidor lento en :{PUERTO}  (GET /demora/<segundos>?bytes=N)', flush=True)
+async def main(puerto):
+    servidor = await asyncio.start_server(atender, '0.0.0.0', puerto)
+    print(f'servidor lento en :{puerto}  (GET /demora/<segundos>?bytes=N)', flush=True)
     async with servidor:
         await servidor.serve_forever()
 
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 8081))
     except KeyboardInterrupt:
         pass

@@ -38,6 +38,7 @@ def crear_app(config: Config | None = None) -> FastAPI:
         pool.iniciar()
         app.state.registro = registro
         app.state.pool = pool
+        app.state.ejecutores = ejecutores
         try:
             yield
         finally:

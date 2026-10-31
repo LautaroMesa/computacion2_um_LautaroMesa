@@ -630,28 +630,34 @@ clase 18.
 
 ## 7. Lo que aprendí
 
-> **Nota:** esta sección tiene que estar escrita con mis palabras. Este es un
-> borrador para revisar y reescribir antes de entregar.
+Antes de este TP pensaba que asyncio era una forma de hacer varias cosas a la
+vez, como threads pero más livianos. Ahora lo entiendo distinto: es un solo
+hilo que va saltando de una corrutina a otra cada vez que alguna tiene que
+esperar algo. Me di cuenta escribiendo el pool de workers, cuando vi que no
+necesitaba ningún lock para el registro de tareas. Al principio no me cerraba,
+hasta que lo relacioné con el scheduler de generadores de la clase 18: el loop
+solo cambia de corrutina en un "await", así que lo que está entre dos "await"
+no lo interrumpe nadie.
 
-Lo que más me cambió la cabeza fue entender que asyncio no es "paralelismo
-barato", sino **un solo hilo que nunca espera**. Mientras escribía el pool me di
-cuenta de que no necesitaba ningún lock, y al principio desconfié; recién lo
-entendí cuando lo relacioné con el scheduler de generadores de la clase 18: el loop
-solo cambia de corrutina en un `await`, así que todo lo que hay entre dos `await`
-es atómico. La contracara la vi en la medición 2: un solo cálculo de 3 segundos sin
-`await` congeló el servidor entero para todos. Ese número, 3.007 ms contra 10 ms,
-explica mejor que cualquier diagrama por qué existe `run_in_executor`.
+Lo malo de eso lo vi en la medición 2. Un hash de 3 segundos corriendo directo
+en el loop dejó a la API sin responder durante todo ese tiempo: un "GET /tareas"
+tardó 3.007 ms, contra 10 ms usando el executor. Ahí me quedó claro para qué
+sirve "run_in_executor", y por qué en este caso tenían que ser procesos y no
+threads (por el GIL, como en la clase 10).
 
-También aprendí que cancelar bien es más difícil que ejecutar. Que una tarea se
-pueda cancelar "en ejecución" me obligó a separar la tarea del worker, a usar
-`TaskGroup` para no dejar descargas huérfanas y a partir el hash en bloques,
-porque descubrí que un proceso que ya está calculando no se puede interrumpir:
-cancelar el `await` solo descarta el resultado. Lo mismo con el apagado: suponía
-que una segunda Ctrl+C se comportaba siempre igual y la prueba me mostró que no.
+Otra cosa que no esperaba es que lo más difícil fuera cancelar, no ejecutar.
+Para poder cancelar una tarea que ya estaba corriendo tuve que separarla del
+worker en su propia "asyncio.Task", usar "TaskGroup" en las descargas para que
+no quedaran pedidos colgados, y partir el hash en bloques. Esto último porque
+descubrí que a un proceso que ya está calculando no lo podés frenar: cancelar
+el "await" solo hace que ignores el resultado, pero el proceso sigue. Con el
+apagado me pasó algo parecido: supuse que apretar Ctrl+C dos veces no cambiaba
+nada, y probándolo vi que a veces se salteaba el volcado del estado.
 
-Y la lección que no esperaba: **medir el instrumento antes que el sistema**. La
-primera medición del techo daba 60 tareas por segundo y casi la reporto así.
-Al investigar resultó que el servidor procesa un POST en 0,12 ms y que lo lento
-eran Docker Desktop y el cliente de pruebas. Escribir mi propio cliente con
-`asyncio.open_connection` (lo de la clase 13) para medir bien fue la forma de
-cerrar el círculo con la primera parte de la materia.
+Por último aprendí a desconfiar de mis propias mediciones. La primera vez que
+medí el techo del pool me daba unas 60 tareas por segundo y casi lo pongo así
+en el informe. Investigando, vi que el servidor procesaba cada POST en 0,12 ms
+y que lo lento en realidad eran el reenvío de puertos de Docker Desktop y el
+cliente que usaba para probar. Terminé haciendo un cliente propio con
+"asyncio.open_connection", parecido a lo de sockets de la clase 13, y midiendo
+desde adentro del contenedor. Ahí recién los números tuvieron sentido.
